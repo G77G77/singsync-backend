@@ -12,4 +12,4 @@ RUN pip install --no-cache-dir fastapi==0.110.0 uvicorn==0.27.1 python-multipart
 
 EXPOSE 7860
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]

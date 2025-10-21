@@ -1,11 +1,13 @@
-# Immagine base già pronta con torch e ffmpeg
+# Base: immagine ufficiale PyTorch con CPU
+FROM pytorch/pytorch:2.1.2-cpu
 
-FROM ghcr.io/huggingface/transformers-pytorch-cpu:latest
+# Aggiorna sistema e installa ffmpeg (per Whisper)
+RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY . .
 
-# Installa solo le nostre dipendenze extra
+# Installa le dipendenze
 RUN pip install --no-cache-dir fastapi==0.110.0 \
     uvicorn==0.27.1 \
     python-multipart==0.0.6 \
@@ -16,7 +18,9 @@ RUN pip install --no-cache-dir fastapi==0.110.0 \
     pydantic==2.7.1 \
     pydub
 
+# Espone la porta dinamica (Railway)
 ENV PORT=8080
 EXPOSE 8080
 
+# Comando di avvio
 CMD ["bash", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT}"]

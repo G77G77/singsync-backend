@@ -1,4 +1,5 @@
 # Immagine base già pronta con torch e ffmpeg
+
 FROM ghcr.io/huggingface/transformers-pytorch-cpu:latest
 
 WORKDIR /app

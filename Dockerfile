@@ -1,13 +1,14 @@
-# Base: immagine ufficiale PyTorch con CPU
-FROM pytorch/pytorch:2.1.2-cpu
+# Base ufficiale PyTorch CPU stabile (2.0.1)
+FROM pytorch/pytorch:2.0.1-cpu
 
-# Aggiorna sistema e installa ffmpeg (per Whisper)
+# Installa ffmpeg per Whisper e pulisci cache
 RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
 
+# Imposta directory di lavoro
 WORKDIR /app
 COPY . .
 
-# Installa le dipendenze
+# Installa dipendenze
 RUN pip install --no-cache-dir fastapi==0.110.0 \
     uvicorn==0.27.1 \
     python-multipart==0.0.6 \
@@ -18,9 +19,9 @@ RUN pip install --no-cache-dir fastapi==0.110.0 \
     pydantic==2.7.1 \
     pydub
 
-# Espone la porta dinamica (Railway)
+# Porta dinamica per Railway
 ENV PORT=8080
 EXPOSE 8080
 
-# Comando di avvio
+# Avvio del server FastAPI
 CMD ["bash", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT}"]

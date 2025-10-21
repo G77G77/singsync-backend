@@ -1,21 +1,21 @@
-FROM python:3.10-slim
+# Immagine base già pronta con torch e ffmpeg
+FROM ghcr.io/huggingface/transformers-pytorch-cpu:latest
 
-
-# Installa ffmpeg (serve per whisper / audio)
-RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
-
-# Imposta la directory di lavoro
 WORKDIR /app
 COPY . .
 
-# Installa dipendenze
-RUN pip install --no-cache-dir -r requirements.txt
+# Installa solo le nostre dipendenze extra
+RUN pip install --no-cache-dir fastapi==0.110.0 \
+    uvicorn==0.27.1 \
+    python-multipart==0.0.6 \
+    requests==2.31.0 \
+    faster-whisper==1.0.3 \
+    python-dotenv==1.0.1 \
+    numpy==1.26.4 \
+    pydantic==2.7.1 \
+    pydub
 
-# Usa la variabile PORT di Railway
 ENV PORT=8080
-
-# Espone la porta
 EXPOSE 8080
 
-# Avvia FastAPI con uvicorn
 CMD ["bash", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT}"]

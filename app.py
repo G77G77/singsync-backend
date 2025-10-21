@@ -2,9 +2,9 @@ from fastapi import FastAPI, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from faster_whisper import WhisperModel
 from pydub import AudioSegment
-import requests, os, tempfile, traceback
+import requests, os, tempfile, traceback, uvicorn
 
-app = FastAPI(title="SingSync Backend", version="2.2")
+app = FastAPI(title="SingSync Backend", version="2.3")
 
 # --- CORS ---
 app.add_middleware(
@@ -26,10 +26,13 @@ GENIUS_API_TOKEN = os.getenv("GENIUS_API_TOKEN")
 
 @app.get("/health")
 def health():
+    """Verifica stato del backend"""
     return {"status": "ok", "message": "Backend SingSync attivo e funzionante!"}
+
 
 # --- Conversione MP3 ---
 def convert_to_mp3(input_path):
+    """Converte l'audio in MP3 per AudD"""
     try:
         audio = AudioSegment.from_file(input_path)
         out_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
@@ -40,35 +43,42 @@ def convert_to_mp3(input_path):
         print(f"⚠️ Errore conversione MP3: {e}")
         return input_path
 
+
 # --- Trascrizione audio ---
 @app.post("/transcribe")
 async def transcribe_audio(audio: UploadFile):
+    """Endpoint per trascrivere l'audio con Whisper"""
     try:
         tmp = f"/tmp/{audio.filename}"
         with open(tmp, "wb") as f:
             f.write(await audio.read())
+
         segs, info = model.transcribe(tmp)
         text = " ".join([s.text for s in segs])
         print(f"✅ Trascrizione: {text[:120]}...")
         return {"transcript": text}
+
     except Exception as e:
         print("❌ Errore trascrizione:", e)
         traceback.print_exc()
         return {"error": str(e)}
 
+
 # --- Identificazione canzone ---
 @app.post("/identify")
 async def identify(audio: UploadFile = None, text: str = Form(None)):
+    """Endpoint principale: combina Whisper, Genius e AudD"""
     try:
         results = []
         whisper_text = text
         audio_path = None
 
-        # 1️⃣ Se arriva un file, trascrivi
+        # 1️⃣ Se arriva un file → trascrivi
         if audio:
             audio_path = f"/tmp/{audio.filename}"
             with open(audio_path, "wb") as f:
                 f.write(await audio.read())
+
             segs, info = model.transcribe(audio_path)
             whisper_text = " ".join([s.text for s in segs])
             print(f"🎙️ Whisper → {whisper_text[:120]}...")
@@ -78,8 +88,11 @@ async def identify(audio: UploadFile = None, text: str = Form(None)):
         if whisper_text and GENIUS_API_TOKEN:
             try:
                 headers = {"Authorization": f"Bearer {GENIUS_API_TOKEN}"}
-                r = requests.get("https://api.genius.com/search",
-                                 headers=headers, params={"q": whisper_text})
+                r = requests.get(
+                    "https://api.genius.com/search",
+                    headers=headers,
+                    params={"q": whisper_text},
+                )
                 data = r.json()
                 for hit in data.get("response", {}).get("hits", []):
                     song = hit["result"]
@@ -94,12 +107,13 @@ async def identify(audio: UploadFile = None, text: str = Form(None)):
             except Exception as e:
                 print(f"⚠️ Errore Genius: {e}")
 
-        # 3️⃣ AudD (sempre chiamato)
+        # 3️⃣ AudD (in parallelo)
         audd_results = []
         if AUDD_API_TOKEN:
             print("🎵 Avvio chiamata AudD...")
             try:
                 data = {"api_token": AUDD_API_TOKEN, "return": "timecode,spotify"}
+
                 if audio_path and os.path.exists(audio_path):
                     mp3_path = convert_to_mp3(audio_path)
                     with open(mp3_path, "rb") as f:
@@ -149,3 +163,9 @@ async def identify(audio: UploadFile = None, text: str = Form(None)):
         print("❌ Errore identify:", e)
         traceback.print_exc()
         return {"error": str(e)}
+
+
+# --- Avvio manuale per Railway (porta dinamica) ---
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 8080))
+    uvicorn.run("app:app", host="0.0.0.0", port=port)

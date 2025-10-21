@@ -1,5 +1,6 @@
 FROM python:3.10-slim
 
+
 # Installa ffmpeg (serve per whisper / audio)
 RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
 

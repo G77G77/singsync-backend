@@ -1,0 +1,14 @@
+# 🔒 File da non caricare mai su GitHub
+.env
+*.pyc
+__pycache__/
+*.log
+*.tmp
+*.mp3
+*.wav
+*.m4a
+*.zip
+.DS_Store
+.vscode/
+node_modules/
+tmp/

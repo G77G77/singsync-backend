@@ -1,41 +1,33 @@
 from fastapi import FastAPI, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
-from pydub import AudioSegment
+from faster_whisper import WhisperModel
 import requests, os, tempfile, traceback
 
-app = FastAPI(title="SingSync Backend", version="3.0")
+app = FastAPI(title="SingSync Backend", version="2.3")
 
-# --- CORS (per frontend mobile) ---
+# --- ✅ CORS ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # puoi restringere ai domini noti
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- Chiavi API ---
+# --- 🎧 Inizializza Whisper ---
+print("🚀 Caricamento modello Whisper (distil-large-v3)...")
+model = WhisperModel("distil-large-v3", device="cpu")
+print("✅ Modello Whisper caricato.")
+
+# --- 🔑 Chiavi API ---
 AUDD_API_TOKEN = os.getenv("AUDD_API_TOKEN")
 GENIUS_API_TOKEN = os.getenv("GENIUS_API_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 @app.get("/health")
 def health():
     return {"status": "ok", "message": "Backend SingSync attivo e funzionante!"}
 
-# --- Funzione di conversione MP3 ---
-def convert_to_mp3(input_path):
-    try:
-        audio = AudioSegment.from_file(input_path)
-        out_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
-        audio.export(out_path, format="mp3")
-        print(f"🎧 File convertito in MP3: {out_path}")
-        return out_path
-    except Exception as e:
-        print(f"⚠️ Errore conversione MP3: {e}")
-        return input_path
-
-# --- TRASCRIZIONE con OpenAI Whisper API ---
+# --- 🎙️ Trascrizione diretta (solo WAV) ---
 @app.post("/transcribe")
 async def transcribe_audio(audio: UploadFile):
     try:
@@ -43,32 +35,21 @@ async def transcribe_audio(audio: UploadFile):
         with open(tmp, "wb") as f:
             f.write(await audio.read())
 
-        # Conversione in MP3 (più stabile)
-        mp3_path = convert_to_mp3(tmp)
+        # Verifica tipo file
+        if not audio.filename.lower().endswith(".wav"):
+            return {"error": "Formato non supportato. Invia file .wav"}
 
-        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
-        with open(mp3_path, "rb") as f:
-            response = requests.post(
-                "https://api.openai.com/v1/audio/transcriptions",
-                headers=headers,
-                files={"file": (audio.filename, f, "audio/mpeg")},
-                data={"model": "whisper-1"},
-            )
-
-        if response.status_code != 200:
-            print("❌ Errore Whisper:", response.text)
-            return {"error": f"Errore Whisper: {response.text}"}
-
-        transcript = response.json().get("text", "")
-        print(f"✅ Trascrizione: {transcript[:120]}...")
-        return {"transcript": transcript}
-
+        print(f"🎧 Ricevuto file WAV: {tmp}")
+        segments, info = model.transcribe(tmp)
+        text = " ".join([s.text for s in segments])
+        print(f"✅ Trascrizione: {text[:120]}...")
+        return {"transcript": text}
     except Exception as e:
-        print("❌ Errore transcribe:", e)
+        print("❌ Errore trascrizione:", e)
         traceback.print_exc()
         return {"error": str(e)}
 
-# --- IDENTIFICAZIONE CANZONE ---
+# --- 🎵 Identificazione canzone ---
 @app.post("/identify")
 async def identify(audio: UploadFile = None, text: str = Form(None)):
     try:
@@ -76,23 +57,13 @@ async def identify(audio: UploadFile = None, text: str = Form(None)):
         whisper_text = text
         audio_path = None
 
-        # 1️⃣ Se arriva un file, usa Whisper API
+        # 1️⃣ Se arriva audio WAV, trascrivi
         if audio:
             audio_path = f"/tmp/{audio.filename}"
             with open(audio_path, "wb") as f:
                 f.write(await audio.read())
-
-            mp3_path = convert_to_mp3(audio_path)
-
-            headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
-            with open(mp3_path, "rb") as f:
-                response = requests.post(
-                    "https://api.openai.com/v1/audio/transcriptions",
-                    headers=headers,
-                    files={"file": (audio.filename, f, "audio/mpeg")},
-                    data={"model": "whisper-1"},
-                )
-            whisper_text = response.json().get("text", "")
+            segments, info = model.transcribe(audio_path)
+            whisper_text = " ".join([s.text for s in segments])
             print(f"🎙️ Whisper → {whisper_text[:120]}...")
 
         # 2️⃣ Genius
@@ -100,8 +71,11 @@ async def identify(audio: UploadFile = None, text: str = Form(None)):
         if whisper_text and GENIUS_API_TOKEN:
             try:
                 headers = {"Authorization": f"Bearer {GENIUS_API_TOKEN}"}
-                r = requests.get("https://api.genius.com/search",
-                                 headers=headers, params={"q": whisper_text})
+                r = requests.get(
+                    "https://api.genius.com/search",
+                    headers=headers,
+                    params={"q": whisper_text}
+                )
                 data = r.json()
                 for hit in data.get("response", {}).get("hits", []):
                     song = hit["result"]
@@ -116,21 +90,20 @@ async def identify(audio: UploadFile = None, text: str = Form(None)):
             except Exception as e:
                 print(f"⚠️ Errore Genius: {e}")
 
-        # 3️⃣ AudD (parallel fallback)
+        # 3️⃣ AudD (sempre in parallelo)
         audd_results = []
         if AUDD_API_TOKEN:
             print("🎵 Avvio chiamata AudD...")
             try:
-                data = {"api_token": AUDD_API_TOKEN, "return": "spotify,timecode"}
+                data = {"api_token": AUDD_API_TOKEN, "return": "timecode,spotify"}
                 if audio_path and os.path.exists(audio_path):
-                    mp3_path = convert_to_mp3(audio_path)
-                    with open(mp3_path, "rb") as f:
+                    with open(audio_path, "rb") as f:
                         r = requests.post("https://api.audd.io/", data=data, files={"file": f})
                 else:
                     data["q"] = whisper_text or text or ""
                     r = requests.post("https://api.audd.io/findLyrics/", data=data)
 
-                print(f"📡 Risposta grezza AudD: {r.text[:400]}")
+                print(f"📡 Risposta grezza AudD: {r.text[:300]}")
                 res_json = r.json()
 
                 if "result" in res_json and res_json["result"]:
@@ -147,7 +120,7 @@ async def identify(audio: UploadFile = None, text: str = Form(None)):
         else:
             print("⚙️ AudD non inizializzato: nessuna chiave trovata")
 
-        # 4️⃣ Fusione risultati
+        # 4️⃣ Fusione risultati (match fuzzy leggero)
         merged = genius_results.copy()
         for ar in audd_results:
             found = False

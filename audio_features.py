@@ -1,75 +1,99 @@
-import librosa
+# audio_features.py
 import numpy as np
-import crepe
-import tempfile
-import os
-from pydub import AudioSegment
+import librosa
 
-def convert_to_wav(input_path):
-    """Converte qualsiasi file audio in .wav (16kHz mono)."""
+NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F',
+              'F#', 'G', 'G#', 'A', 'A#', 'B']
+
+def hz_to_note_name(hz: float) -> dict:
+    """Converte Hz in nota + MIDI (A4=440). Ritorna {} se non valido."""
+    if not hz or np.isnan(hz) or hz <= 0:
+        return {}
+    midi = 69 + 12 * np.log2(hz / 440.0)
+    midi_rounded = int(np.round(midi))
+    note_index = midi_rounded % 12
+    octave = midi_rounded // 12 - 1
+    return {
+        "pitch_hz": float(hz),
+        "pitch_midi": midi_rounded,
+        "pitch_note": f"{NOTE_NAMES[note_index]}{octave}"
+    }
+
+def safe_mean(x):
     try:
-        audio = AudioSegment.from_file(input_path)
-        wav_path = tempfile.NamedTemporaryFile(delete=False, suffix=".wav").name
-        audio = audio.set_frame_rate(16000).set_channels(1)
-        audio.export(wav_path, format="wav")
-        return wav_path
-    except Exception as e:
-        print(f"⚠️ Errore conversione WAV: {e}")
-        return input_path
+        v = np.nanmean(x)
+        return float(v) if np.isfinite(v) else None
+    except Exception:
+        return None
 
+def extract_features(path: str, target_sr: int = 22050) -> dict:
+    """Estrazione feature audio (CPU-friendly) per la Fase 1."""
+    y, sr = librosa.load(path, sr=target_sr, mono=True)
+    duration = float(librosa.get_duration(y=y, sr=sr))
 
-def extract_features(audio_path: str):
-    """
-    Estrae feature musicali di base da un file audio:
-      - Tempo (BPM)
-      - Key (tonalità)
-      - MFCC
-      - Chroma (armonia)
-      - Pitch medio tramite CREPE
-    """
+    out = {
+        "sr": sr,
+        "duration_sec": duration,
+        "tempo_bpm": None,
+        "beats_count": None,
+        "pitch": {},              # {pitch_hz, pitch_midi, pitch_note}
+        "chroma_means": [],       # 12 valori (C..B)
+        "mfcc_means": [],         # 13 valori
+        "spectral_centroid_hz": None,
+        "spectral_rolloff_hz": None,
+        "zcr": None,
+        "rms": None,
+    }
+
+    # 1) Tempo/Beat
     try:
-        wav_path = convert_to_wav(audio_path)
-        y, sr = librosa.load(wav_path, sr=16000)
+        tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
+        out["tempo_bpm"] = float(tempo)
+        out["beats_count"] = int(len(beat_frames))
+    except Exception:
+        pass
 
-        # 1️⃣ Tempo (BPM)
-        tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+    # 2) Pitch (robusto: YIN; se fallisce, torna vuoto)
+    try:
+        # finestra 2048 hop 256 => abbastanza rapido
+        f0 = librosa.yin(y, fmin=librosa.note_to_hz('C2'),
+                         fmax=librosa.note_to_hz('C7'),
+                         sr=sr, frame_length=2048, hop_length=256)
+        # prendo la mediana ignorando NaN
+        f0_med = np.nanmedian(f0)
+        if np.isfinite(f0_med) and f0_med > 0:
+            out["pitch"] = hz_to_note_name(float(f0_med))
+    except Exception:
+        pass
 
-        # 2️⃣ Tonalità
+    # 3) Chroma CQT → media canali
+    try:
         chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
-        chroma_mean = np.mean(chroma, axis=1)
-        key_index = np.argmax(chroma_mean)
-        keys = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-        key_estimate = keys[key_index % 12]
+        out["chroma_means"] = [float(v) for v in np.nanmean(chroma, axis=1).tolist()]
+    except Exception:
+        pass
 
-        # 3️⃣ MFCC (caratteristiche timbriche)
+    # 4) MFCC (13)
+    try:
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
-        mfcc_mean = np.mean(mfcc, axis=1).tolist()
+        out["mfcc_means"] = [float(v) for v in np.nanmean(mfcc, axis=1).tolist()]
+    except Exception:
+        pass
 
-        # 4️⃣ Pitch tracking (CREPE)
-        pitch_mean = None
-        pitch_std = None
-        try:
-            _, frequency, confidence, _ = crepe.predict(wav_path, sr, viterbi=True, step_size=10)
-            valid = confidence > 0.8
-            if np.any(valid):
-                pitch_mean = float(np.mean(frequency[valid]))
-                pitch_std = float(np.std(frequency[valid]))
-        except Exception as e:
-            print(f"⚠️ CREPE non riuscito: {e}")
+    # 5) Spettrali + energia
+    try:
+        centroid = librosa.feature.spectral_centroid(y=y, sr=sr)
+        rolloff = librosa.feature.spectral_rolloff(y=y, sr=sr, roll_percent=0.85)
+        zcr = librosa.feature.zero_crossing_rate(y)
+        rms = librosa.feature.rms(y=y)
 
-        features = {
-            "tempo": float(tempo),
-            "key": key_estimate,
-            "mfcc_mean": mfcc_mean,
-            "pitch_mean": pitch_mean,
-            "pitch_std": pitch_std,
-            "chroma_mean": chroma_mean.tolist()
-        }
+        out["spectral_centroid_hz"] = safe_mean(librosa.hz_to_mel(centroid))  # opzionale: mel
+        # se vuoi in Hz direttamente, usa float(np.nanmean(centroid))
+        out["spectral_centroid_hz"] = float(np.nanmean(centroid)) if np.isfinite(np.nanmean(centroid)) else None
+        out["spectral_rolloff_hz"]  = float(np.nanmean(rolloff))  if np.isfinite(np.nanmean(rolloff))  else None
+        out["zcr"] = float(np.nanmean(zcr)) if np.isfinite(np.nanmean(zcr)) else None
+        out["rms"] = float(np.nanmean(rms)) if np.isfinite(np.nanmean(rms)) else None
+    except Exception:
+        pass
 
-        os.remove(wav_path)
-        print(f"🎵 Feature estratte con successo: {features}")
-        return features
-
-    except Exception as e:
-        print(f"❌ Errore estrazione feature: {e}")
-        return {"error": str(e)}
+    return out

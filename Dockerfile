@@ -1,20 +1,38 @@
-# ✅ Base leggera con Python 3.10 e FFmpeg
+# ============================================================
+# 🏗️ BASE IMAGE — Python 3.10 slim (leggera e stabile su Render)
+# ============================================================
 FROM python:3.10-slim
 
-# Installa FFmpeg (per la conversione audio)
-RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+# ------------------------------------------------------------
+# 🧩 Install system dependencies (FFmpeg + libsndfile)
+# Librosa e soundfile ne hanno bisogno per analizzare l’audio
+# ------------------------------------------------------------
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    libsndfile1 \
+ && rm -rf /var/lib/apt/lists/*
 
-# Imposta la cartella di lavoro
+# ------------------------------------------------------------
+# 📁 Imposta directory di lavoro
+# ------------------------------------------------------------
 WORKDIR /app
 
-# Copia i file del progetto
+# ------------------------------------------------------------
+# 🧠 Copia file di progetto
+# ------------------------------------------------------------
 COPY . .
 
-# Installa le dipendenze
+# ------------------------------------------------------------
+# 📦 Installa dipendenze
+# ------------------------------------------------------------
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Espone la porta su cui FastAPI sarà in ascolto
-EXPOSE 10000
+# ------------------------------------------------------------
+# 🌍 Porta esposta (Render usa $PORT automaticamente)
+# ------------------------------------------------------------
+EXPOSE 8080
 
-# Avvia il server (Render usa PORT come variabile automatica)
-CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT:-10000}"]
+# ------------------------------------------------------------
+# 🚀 Comando di avvio
+# ------------------------------------------------------------
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]

@@ -1,35 +1,54 @@
 @echo off
-echo ==========================================
-echo 🚀 AVVIO COMPLETO SINGSYNC BACKEND
-echo ==========================================
+setlocal enabledelayedexpansion
+
+:: === Timestamp per log ===
+for /f "tokens=1-4 delims=/ " %%a in ("%date%") do (
+    set DATESTAMP=%%d-%%b-%%c
+)
+for /f "tokens=1-2 delims=: " %%a in ("%time%") do (
+    set TIMESTAMP=%%a%%b
+)
+set LOGFILE=logs\backend_run_%DATESTAMP%_%TIMESTAMP%.log
+
+echo ========================================== > %LOGFILE%
+echo 🚀 AVVIO COMPLETO SINGSYNC BACKEND >> %LOGFILE%
+echo ========================================== >> %LOGFILE%
 cd /d "%~dp0"
 
-REM === 1️⃣ Attiva il virtual environment ===
+:: === 1️⃣ Crea ambiente virtuale se mancante ===
 if not exist "venv\" (
-    echo ⚙️  Creazione ambiente virtuale...
-    python -m venv venv
+    echo ⚙️  Creazione ambiente virtuale... >> %LOGFILE%
+    python -m venv venv >> %LOGFILE% 2>&1
 )
-call venv\Scripts\activate
+call venv\Scripts\activate >> %LOGFILE% 2>&1
 
-REM === 2️⃣ Installa le dipendenze ===
-echo 📦 Aggiornamento pacchetti...
-python -m pip install --upgrade pip >nul
-pip install -r requirements.txt >nul
+:: === 2️⃣ Installa dipendenze ===
+echo 📦 Aggiornamento pacchetti... >> %LOGFILE%
+python -m pip install --upgrade pip >> %LOGFILE% 2>&1
+pip install -r requirements.txt >> %LOGFILE% 2>&1
 
-REM === 3️⃣ Git pull per aggiornare ===
-echo 🔄 Aggiornamento repository da GitHub...
-git pull
+:: === 3️⃣ Aggiorna repo ===
+echo 🔄 Aggiornamento repository da GitHub... >> %LOGFILE%
+git pull >> %LOGFILE% 2>&1
 
-REM === 4️⃣ Git commit & push automatico ===
-echo 💾 Eseguo commit e push automatico...
-git add .
-git commit -m "Auto-update locale SingSync backend" >nul 2>&1
-git push origin main
+:: === 4️⃣ Commit & Push automatico ===
+echo 💾 Eseguo commit e push automatico... >> %LOGFILE%
+git add . >> %LOGFILE% 2>&1
+git commit -m "Auto-update locale SingSync backend" >> %LOGFILE% 2>&1
+git push origin main >> %LOGFILE% 2>&1
 
-REM === 5️⃣ Avvio del server ===
-echo ==========================================
-echo 🔥 Avvio FastAPI su http://127.0.0.1:8000 ...
-echo ==========================================
-python -m uvicorn app:app --reload
+:: === 5️⃣ Avvio del server FastAPI ===
+echo ========================================== >> %LOGFILE%
+echo 🔥 Avvio FastAPI su http://127.0.0.1:8000 ... >> %LOGFILE%
+echo ========================================== >> %LOGFILE%
+echo.
+echo 👀 Apri questo file per vedere i log: %LOGFILE%
+echo.
+
+:: --- Apre automaticamente il log in Notepad con 5 secondi di ritardo ---
+timeout /t 5 /nobreak >nul
+start notepad "%LOGFILE%"
+
+python -m uvicorn app:app --reload >> %LOGFILE% 2>&1
 
 pause

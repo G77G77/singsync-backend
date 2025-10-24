@@ -8,6 +8,8 @@ numpy==1.26.4
 scipy==1.11.4
 soundfile==0.12.1
 audioread==3.0.1
-librosa==0.10.1
+librosa==0.10.2
 numba==0.58.1
 llvmlite==0.41.1
+crepe==0.0.14
+tensorflow-cpu==2.15.0

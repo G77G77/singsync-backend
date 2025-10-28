@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: singsync-backend
+    env: docker
+    plan: standard
+    region: frankfurt
+    autoDeploy: true
+
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: PYTHONPATH
+        value: "/app"
+      - key: SSE_TIMEOUT_SEC
+        value: "45"
+
+      # 🔐 Chiavi API - impostale dal pannello Render
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GENIUS_API_TOKEN
+        sync: false
+      - key: AUDD_API_TOKEN
+        sync: false
+      - key: ARCCLOUD_ACCESS_KEY
+        sync: false
+      - key: ARCCLOUD_ACCESS_SECRET
+        sync: false
+      - key: ARCCLOUD_HOST
+        sync: false
+
+    healthCheckPath: /health
+    autoDeployOnCommit: true

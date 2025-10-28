@@ -1,68 +1,111 @@
+# pipelines/pipeline_whisper_genius.py
 import os
+import traceback
 import requests
-from typing import Dict, Any, List
+import tempfile
+import openai
 
-MOCK = os.getenv("MOCK_PIPELINES", "0") == "1"
+# -------------------------------------------------------------
+# Funzione principale della pipeline: Whisper + Genius
+# -------------------------------------------------------------
+async def run_whisper_genius(audio_path: str) -> dict:
+    """
+    Pipeline 2️⃣: trascrive un file audio tramite OpenAI Whisper API
+    e cerca la canzone corrispondente tramite Genius API.
 
-def _openai_transcribe_wav(path: str) -> str:
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY non configurata")
-    url = "https://api.openai.com/v1/audio/transcriptions"
-    headers = {"Authorization": f"Bearer {api_key}"}
-    with open(path, "rb") as f:
-        files = {"file": (os.path.basename(path), f, "audio/wav")}
-        data = {"model": "whisper-1"}
-        r = requests.post(url, headers=headers, data=data, files=files, timeout=60)
-    jr = r.json()
-    if "error" in jr:
-        raise RuntimeError(jr["error"])
-    return jr.get("text", "").strip()
-
-def _genius_search(q: str) -> List[Dict[str, Any]]:
-    token = os.getenv("GENIUS_API_TOKEN")
-    out = []
-    if not token or not q:
-        return out
+    Restituisce un dizionario pronto per essere inviato via SSE.
+    """
     try:
-        headers = {"Authorization": f"Bearer {token}"}
-        r = requests.get("https://api.genius.com/search", headers=headers, params={"q": q}, timeout=15)
-        data = r.json()
-        for hit in data.get("response", {}).get("hits", []):
-            s = hit.get("result", {})
-            out.append({
-                "title": s.get("title", ""),
-                "artist": (s.get("primary_artist") or {}).get("name", ""),
-                "confidence": 0.5,
-                "url": s.get("url", ""),
-                "preview": "",
-                "image": ""
-            })
-    except Exception as e:
-        out = []
-    return out
+        OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+        GENIUS_API_TOKEN = os.getenv("GENIUS_API_TOKEN")
 
-async def run_whisper_genius(file_path: str) -> Dict[str, Any]:
-    source = "whisper_genius"
-    if MOCK:
-        import asyncio
-        await asyncio.sleep(3.3)
+        if not OPENAI_API_KEY:
+            return {
+                "source": "whisper_genius",
+                "ok": False,
+                "error": "OPENAI_API_KEY non configurata",
+            }
+
+        # -------------------------------------------------------------
+        # 1️⃣ TRASCRIZIONE AUDIO → TESTO (OpenAI Whisper API)
+        # -------------------------------------------------------------
+        openai.api_key = OPENAI_API_KEY
+        with open(audio_path, "rb") as f:
+            resp = openai.Audio.transcriptions.create(
+                model="whisper-1",
+                file=f,
+                language="it"  # puoi cambiare in "auto" o "en"
+            )
+
+        transcript_text = resp.text.strip() if hasattr(resp, "text") else None
+        if not transcript_text:
+            return {
+                "source": "whisper_genius",
+                "ok": False,
+                "error": "Whisper non ha generato testo valido"
+            }
+
+        print(f"🎙️ [Whisper] Trascrizione parziale: {transcript_text[:120]}...")
+
+        # -------------------------------------------------------------
+        # 2️⃣ RICERCA SU GENIUS
+        # -------------------------------------------------------------
+        if not GENIUS_API_TOKEN:
+            print("⚠️ GENIUS_API_TOKEN mancante: salto ricerca su Genius")
+            return {
+                "source": "whisper_genius",
+                "ok": True,
+                "transcript": transcript_text,
+                "results": [],
+                "note": "GENIUS_API_TOKEN mancante"
+            }
+
+        headers = {"Authorization": f"Bearer {GENIUS_API_TOKEN}"}
+        params = {"q": transcript_text}
+        r = requests.get("https://api.genius.com/search", headers=headers, params=params, timeout=30)
+
+        if r.status_code != 200:
+            return {
+                "source": "whisper_genius",
+                "ok": False,
+                "error": f"Genius API error {r.status_code}"
+            }
+
+        data = r.json()
+        hits = data.get("response", {}).get("hits", [])
+
+        if not hits:
+            return {
+                "source": "whisper_genius",
+                "ok": True,
+                "transcript": transcript_text,
+                "results": [],
+                "note": "Nessun risultato Genius"
+            }
+
+        results = []
+        for hit in hits[:5]:
+            song = hit["result"]
+            results.append({
+                "title": song["title"],
+                "artist": song["primary_artist"]["name"],
+                "url": song["url"],
+                "source": "whisper_genius",
+                "confidence": 0.6
+            })
+
+        print(f"🎵 [Genius] {len(results)} risultati trovati.")
         return {
-            "source": source, "ok": True,
-            "query": "mock transcript text here",
-            "results": [{
-                "title": "Mock Genius Title",
-                "artist": "Mock Artist",
-                "confidence": 0.55,
-                "url": "https://genius.com/",
-                "preview": "",
-                "image": ""
-            }]
+            "source": "whisper_genius",
+            "ok": True,
+            "transcript": transcript_text,
+            "results": results
         }
 
-    try:
-        text = _openai_transcribe_wav(file_path)
-        results = _genius_search(text)
-        return {"source": source, "ok": True, "query": text, "results": results}
     except Exception as e:
-        return {"source": source, "ok": False, "error": str(e)}
+        traceback.print_exc()
+        return {
+            "source": "whisper_genius",
+            "ok": False,
+            "error": str(e)
+        }

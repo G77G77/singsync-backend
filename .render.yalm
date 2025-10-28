@@ -1,28 +1,20 @@
 services:
   - type: web
     name: singsync-backend
-    env: docker
+    env: python
     plan: standard
-    region: frankfurt
-    autoDeploy: true
-
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
-
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
     envVars:
-      - key: PYTHONUNBUFFERED
-        value: "1"
-      - key: PYTHONPATH
-        value: "/app"
+      - key: PYTHON_VERSION
+        value: 3.11.9
       - key: SSE_TIMEOUT_SEC
-        value: "45"
-
-      # 🔐 Chiavi API - impostale dal pannello Render
+        value: 60
       - key: OPENAI_API_KEY
         sync: false
       - key: GENIUS_API_TOKEN
-        sync: false
-      - key: AUDD_API_TOKEN
         sync: false
       - key: ARCCLOUD_ACCESS_KEY
         sync: false
@@ -30,6 +22,3 @@ services:
         sync: false
       - key: ARCCLOUD_HOST
         sync: false
-
-    healthCheckPath: /health
-    autoDeployOnCommit: true

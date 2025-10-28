@@ -1,13 +1,24 @@
-fastapi==0.115.2
-uvicorn==0.30.1
-aiofiles
-requests
-python-multipart
-pydub
-numpy
-librosa
-soundfile
-scipy
-crepe
-tensorflow-cpu
-faiss-cpu
+# === Core API ===
+fastapi==0.115.0
+uvicorn==0.30.6
+requests==2.31.0
+python-multipart==0.0.9
+aiofiles==24.1.0
+
+# === Audio / DSP ===
+numpy==1.26.4
+scipy==1.12.0
+librosa==0.10.2.post1
+soundfile==0.12.1
+audioread==3.0.1
+
+# === Machine Learning / Pitch Extraction ===
+tensorflow==2.15.0
+crepe==0.0.12
+openl3==0.4.1
+
+# === AI & API Clients ===
+openai==1.51.0
+
+# === Utility ===
+faiss-cpu==1.7.4

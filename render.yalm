@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: singsync-backend
+    env: docker
+    plan: standard
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: MOCK_PIPELINES
+        value: "1"        # per test card per card
+      - key: CUSTOM_PIPELINE_ENABLED
+        value: "0"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GENIUS_API_TOKEN
+        sync: false
+      - key: ARCCLOUD_ACCESS_KEY
+        sync: false
+      - key: ARCCLOUD_ACCESS_SECRET
+        sync: false
+      - key: ARCCLOUD_HOST
+        value: "https://identify-eu-west-1.acrcloud.com"

@@ -1,38 +1,17 @@
-# ============================================================
-# 🏗️ BASE IMAGE — Python 3.10 slim (leggera e stabile su Render)
-# ============================================================
+# Base Python snella
 FROM python:3.10-slim
 
-# ------------------------------------------------------------
-# 🧩 Install system dependencies (FFmpeg + libsndfile)
-# Librosa e soundfile ne hanno bisogno per analizzare l’audio
-# ------------------------------------------------------------
-RUN apt-get update && apt-get install -y \
-    ffmpeg \
-    libsndfile1 \
- && rm -rf /var/lib/apt/lists/*
+# ffmpeg per conversioni audio
+RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
 
-# ------------------------------------------------------------
-# 📁 Imposta directory di lavoro
-# ------------------------------------------------------------
 WORKDIR /app
-
-# ------------------------------------------------------------
-# 🧠 Copia file di progetto
-# ------------------------------------------------------------
-COPY . .
-
-# ------------------------------------------------------------
-# 📦 Installa dipendenze
-# ------------------------------------------------------------
+COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ------------------------------------------------------------
-# 🌍 Porta esposta (Render usa $PORT automaticamente)
-# ------------------------------------------------------------
+COPY . /app
+
+# Render usa $PORT
+ENV PORT=8080
 EXPOSE 8080
 
-# ------------------------------------------------------------
-# 🚀 Comando di avvio
-# ------------------------------------------------------------
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]

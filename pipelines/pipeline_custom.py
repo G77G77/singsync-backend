@@ -1,36 +1,77 @@
 import os
-import time
-from typing import Dict, Any
+import numpy as np
+import librosa
+import traceback
 
-# Nota: la vera Fase 1–3 (Librosa/CREPE/OpenL3) può essere pesante su Render.
-# Qui lasciamo un placeholder veloce e sicuro (mock) finché non attiviamo il modello.
-MOCK = os.getenv("MOCK_PIPELINES", "0") == "1"
-ENABLED = os.getenv("CUSTOM_PIPELINE_ENABLED", "0") == "1"
+# --- Import "lazy" per TensorFlow / CREPE / OpenL3 ---
+try:
+    import crepe
+except ImportError:
+    crepe = None
 
-async def run_custom(file_path: str) -> Dict[str, Any]:
-    source = "custom_features"
-    if MOCK or not ENABLED:
-        import asyncio
-        await asyncio.sleep(1.6)
-        return {
-            "source": source, "ok": True, "mode": "mock",
-            "results": [{
-                "title": "Mock Melody Match",
-                "artist": "—",
-                "confidence": 0.42,
-                "url": "",
-                "preview": "",
-                "image": ""
-            }]
+try:
+    import tensorflow as tf
+except ImportError:
+    tf = None
+
+try:
+    import openl3
+except ImportError:
+    openl3 = None
+
+
+async def run_custom(audio_path: str):
+    """
+    Pipeline personalizzata SingSync:
+    - Estrae feature audio di base (MFCC, RMS)
+    - Se disponibili, usa CREPE e OpenL3 per feature avanzate
+    - Restituisce un dizionario compatibile con il frontend
+    """
+    try:
+        y, sr = librosa.load(audio_path, sr=16000, mono=True)
+        duration = librosa.get_duration(y=y, sr=sr)
+        rms = np.mean(librosa.feature.rms(y=y))
+        mfcc = np.mean(librosa.feature.mfcc(y=y, sr=sr), axis=1).tolist()
+
+        features = {
+            "source": "custom",
+            "ok": True,
+            "duration": round(duration, 2),
+            "rms": round(float(rms), 6),
+            "mfcc": mfcc,
+            "extra": {}
         }
 
-    # Se abiliterai davvero la pipeline, qui invochi la tua funzione reale:
-    # feats = extract_features(file_path)  # es. dal modulo audio_features.py
-    # embedding = embed(feats)
-    # matches = search_knn(embedding)
-    # return {...}
-    return {
-        "source": source,
-        "ok": False,
-        "error": "Custom pipeline non attivata (set CUSTOM_PIPELINE_ENABLED=1)"
-    }
+        # --- CREPE: pitch detection (solo se disponibile) ---
+        if crepe is not None:
+            try:
+                _, frequency, confidence, _ = crepe.predict(y, sr, viterbi=True)
+                mean_pitch = float(np.mean(frequency))
+                mean_conf = float(np.mean(confidence))
+                features["extra"]["crepe_pitch"] = round(mean_pitch, 2)
+                features["extra"]["crepe_confidence"] = round(mean_conf, 3)
+            except Exception as e:
+                features["extra"]["crepe_error"] = str(e)
+        else:
+            features["extra"]["crepe_status"] = "CREPE non installato (lazy import)"
+
+        # --- OpenL3: embeddings audio (solo se disponibile) ---
+        if openl3 is not None:
+            try:
+                emb, ts = openl3.get_audio_embedding(y, sr, embedding_size=512, content_type="music")
+                mean_emb = np.mean(emb, axis=0)[:10].tolist()  # compressione leggera
+                features["extra"]["openl3_preview"] = mean_emb
+            except Exception as e:
+                features["extra"]["openl3_error"] = str(e)
+        else:
+            features["extra"]["openl3_status"] = "OpenL3 non installato (lazy import)"
+
+        return features
+
+    except Exception as e:
+        traceback.print_exc()
+        return {
+            "source": "custom",
+            "ok": False,
+            "error": str(e)
+        }

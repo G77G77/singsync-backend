@@ -22,4 +22,5 @@ idna
 anyio
 starlette==0.37.2
 jinja2
-python-dotenv==1.0.1
+python-dotenv==1.0.
+aiohttp==3.10.5

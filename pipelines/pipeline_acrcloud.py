@@ -1,102 +1,104 @@
 import os
 import time
-import json
 import hmac
 import base64
 import hashlib
 import requests
 from typing import Dict, Any
 
-MOCK = os.getenv("MOCK_PIPELINES", "0") == "1"
+def _acrcloud_disabled() -> bool:
+    return os.getenv("ENABLE_ACRCLOUD", "1") != "1"
 
-def _acrcloud_signature(access_secret, data_type, signature_version, timestamp):
-    sign_str = f"POST\n/v1/identify\n{access_secret}\n{data_type}\n{signature_version}\n{timestamp}"
-    dig = hmac.new(access_secret.encode(), sign_str.encode(), hashlib.sha1).digest()
-    return base64.b64encode(dig).decode()
-
-def _acrcloud_request(file_path: str) -> Dict[str, Any]:
+def _build_acr_signature(access_key: str, access_secret: str, timestamp: str) -> str:
     """
-    Secondo ACRCloud (identify API). Richiede:
-    - ARCCLOUD_ACCESS_KEY
-    - ARCCLOUD_ACCESS_SECRET
-    - ARCCLOUD_HOST (es: https://identify-eu-west-1.acrcloud.com)
+    Firma secondo le specifiche ACRCloud identify v1
+    StringToSign:
+      "POST\n/v1/identify\n{access_key}\naudio\n1\n{timestamp}"
+    HMAC-SHA1 con secret, poi base64
     """
-    access_key   = os.getenv("ARCCLOUD_ACCESS_KEY")
-    access_secret= os.getenv("ARCCLOUD_ACCESS_SECRET")
-    host         = os.getenv("ARCCLOUD_HOST", "https://identify-eu-west-1.acrcloud.com")
+    string_to_sign = "\n".join(["POST", "/v1/identify", access_key, "audio", "1", timestamp])
+    sign = hmac.new(access_secret.encode("utf-8"), string_to_sign.encode("utf-8"), hashlib.sha1).digest()
+    return base64.b64encode(sign).decode("utf-8")
 
-    if not access_key or not access_secret:
-        raise RuntimeError("ACRCloud chiavi non configurate")
+def run_acrcloud(audio_path: str) -> Dict[str, Any]:
+    if _acrcloud_disabled():
+        return {"source": "acrcloud", "ok": False, "disabled": True}
 
-    endpoint = host.rstrip("/") + "/v1/identify"
-    data_type = "audio"
-    sig_ver = "1"
-    ts = str(int(time.time()))
-
-    sign = _acrcloud_signature(access_secret, data_type, sig_ver, ts)
-
-    files = {"sample": open(file_path, "rb")}
-    data = {
-        "access_key": access_key,
-        "sample_bytes": os.path.getsize(file_path),
-        "timestamp": ts,
-        "signature": sign,
-        "data_type": data_type,
-        "signature_version": sig_ver,
-    }
-    r = requests.post(endpoint, files=files, data=data, timeout=50)
-    return r.json()
-
-async def run_acrcloud(file_path: str) -> Dict[str, Any]:
-    source = "acrcloud"
-    if MOCK:
-        # simulazione con latenza
-        import asyncio
-        await asyncio.sleep(2.5)
-        return {
-            "source": source, "ok": True,
-            "results": [{
-                "title": "Mock ACR Result",
-                "artist": "Mock Artist",
-                "confidence": 0.85,
-                "url": "",
-                "preview": "",
-                "image": ""
-            }]
-        }
+    access_key = os.getenv("ARCCLOUD_ACCESS_KEY", "")
+    access_secret = os.getenv("ARCCLOUD_ACCESS_SECRET", "")
+    host = os.getenv("ARCCLOUD_HOST", "").rstrip("/")
+    if not (access_key and access_secret and host):
+        return {"source": "acrcloud", "ok": False, "error": "missing_credentials"}
 
     try:
-        jr = _acrcloud_request(file_path)
-        # parsing risultato
-        res = []
-        status = jr.get("status", {})
-        if status.get("msg") == "Success":
-            metadata = jr.get("metadata", {})
-            music = metadata.get("music", [])
-            for m in music[:3]:
-                title = m.get("title")
-                artists = ", ".join([a.get("name") for a in m.get("artists", []) if a.get("name")])
-                url = ""
-                # prova info extra
-                external_metadata = m.get("external_metadata", {})
-                spotify = external_metadata.get("spotify", {})
-                if isinstance(spotify, dict) and "track" in spotify:
-                    url = spotify["track"].get("link", "") or ""
-                image = ""
-                if "album" in m and "images" in m["album"]:
-                    # non sempre presente, fallback vuoto
-                    pass
+        with open(audio_path, "rb") as f:
+            sample_bytes = f.read()
 
-                res.append({
+        timestamp = str(int(time.time()))
+        signature = _build_acr_signature(access_key, access_secret, timestamp)
+
+        data = {
+            "access_key": access_key,
+            "data_type": "audio",
+            "signature_version": "1",
+            "signature": signature,
+            "timestamp": timestamp,
+        }
+        files = {
+            "sample": ("audio.wav", sample_bytes, "audio/wav"),
+            "sample_bytes": (None, str(len(sample_bytes))),
+        }
+
+        url = f"{host}/v1/identify"
+        resp = requests.post(url, data=data, files=files, timeout=30)
+        jr = resp.json()
+
+        # Parsing robusto (ACRCloud può restituire più matches)
+        results = []
+        status_code = (jr.get("status") or {}).get("code", -1)
+        if status_code == 0:
+            # hits in metadata.music
+            for m in (jr.get("metadata", {}).get("music") or [])[:3]:
+                title = m.get("title")
+                artists = m.get("artists") or []
+                artist = ", ".join([a.get("name", "") for a in artists if a.get("name")])
+                # Alcuni provider
+                url_link = ""
+                image = ""
+                preview = ""
+                external_metadata = m.get("external_metadata", {})
+
+                # Spotify
+                sp = external_metadata.get("spotify", {})
+                sp_track = (sp.get("track") or {})
+                if not url_link:
+                    url_link = sp_track.get("external_urls", {}).get("spotify", "")
+                if not preview:
+                    preview = sp_track.get("preview_url", "")
+                if not image:
+                    imgs = (sp.get("album") or {}).get("images", [])
+                    if imgs:
+                        image = imgs[0].get("url", "")
+
+                # Deezer / YouTube fallback semplici
+                dz = external_metadata.get("deezer", {})
+                if not url_link:
+                    url_link = (dz.get("track") or {}).get("link", "") or url_link
+
+                yt = external_metadata.get("youtube", {})
+                if not url_link:
+                    url_link = f"https://www.youtube.com/watch?v={ (yt.get('vid') or '') }" if yt.get("vid") else url_link
+
+                results.append({
                     "title": title or "",
-                    "artist": artists or "",
-                    "confidence": float(m.get("score", 80)) / 100.0,  # euristico
-                    "url": url,
-                    "preview": "",
-                    "image": image
+                    "artist": artist or "",
+                    "url": url_link,
+                    "preview": preview,
+                    "image": image,
+                    "source": "acrcloud",
+                    "confidence": 0.85
                 })
-            return {"source": source, "ok": True, "results": res}
-        else:
-            return {"source": source, "ok": False, "error": status.get("msg", "Unknown")}
+
+        return {"source": "acrcloud", "ok": True, "results": results}
     except Exception as e:
-        return {"source": source, "ok": False, "error": str(e)}
+        return {"source": "acrcloud", "ok": False, "error": str(e)}

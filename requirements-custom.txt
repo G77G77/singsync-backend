@@ -1,0 +1,8 @@
+# --- CUSTOM PIPELINE (attiva solo in locale o ambienti potenti) ---
+tensorflow==2.15.0
+crepe==0.0.12
+openl3==0.4.1
+torch==2.2.1
+torchvision==0.17.1
+numba==0.58.1
+scikit-learn==1.4.2

@@ -1,18 +1,17 @@
-# ------------------------------
-# SingSync Backend - Dockerfile
-# Versione: 4.0 - Ottimizzata per Render
-# ------------------------------
-
-# Base image leggera con Python 3.10 (compatibile TensorFlow CPU)
+# Usa Python slim
 FROM python:3.10-slim
 
-# Imposta la working directory
+# Arg per installazione custom deps
+ARG INSTALL_CUSTOM_DEPS=0
+
+# Imposta working dir
 WORKDIR /app
 
-# Evita output bufferizzato
-ENV PYTHONUNBUFFERED=1
+# Copia file requirements e installa dipendenze
+COPY requirements.txt .
+COPY requirements-custom.txt .
 
-# Installa dipendenze di sistema essenziali per audio (librosa, soundfile, ffmpeg)
+# Dipendenze di sistema necessarie
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ffmpeg \
@@ -20,15 +19,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copia i file requirements e installa le dipendenze
-COPY requirements.txt .
+# Installa le dipendenze Python base
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copia tutto il progetto nel container
+# Installa (opzionale) pacchetti pesanti solo se specificato
+RUN if [ "$INSTALL_CUSTOM_DEPS" = "1" ]; then \
+        pip install --no-cache-dir -r requirements-custom.txt; \
+    else \
+        echo "⚠️  Skipping heavy deps (tensorflow, crepe, openl3)"; \
+    fi
+
+# Copia tutto il progetto
 COPY . .
 
-# Espone la porta predefinita per Render (8080)
+# Variabili d'ambiente
+ENV PYTHONUNBUFFERED=1
+ENV PORT=8080
+
+# Espone porta
 EXPOSE 8080
 
-# Comando di avvio (Uvicorn con FastAPI)
+# Comando di avvio
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]

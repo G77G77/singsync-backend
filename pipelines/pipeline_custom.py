@@ -1,77 +1,95 @@
 import os
-import numpy as np
-import librosa
-import traceback
+from typing import Dict, Any
 
-# --- Import "lazy" per TensorFlow / CREPE / OpenL3 ---
-try:
-    import crepe
-except ImportError:
-    crepe = None
+def _custom_disabled() -> bool:
+    return os.getenv("ENABLE_CUSTOM", "0") != "1"
 
-try:
-    import tensorflow as tf
-except ImportError:
-    tf = None
-
-try:
-    import openl3
-except ImportError:
-    openl3 = None
-
-
-async def run_custom(audio_path: str):
+def run_custom(audio_path: str) -> Dict[str, Any]:
     """
-    Pipeline personalizzata SingSync:
-    - Estrae feature audio di base (MFCC, RMS)
-    - Se disponibili, usa CREPE e OpenL3 per feature avanzate
-    - Restituisce un dizionario compatibile con il frontend
+    Pipeline custom:
+      - Lazy import deps pesanti (tensorflow, crepe, openl3)
+      - Estrae pitch + cromagramma + tempo + embedding
+      - Ritorna una "card" informativa (senza matching DB in questa fase)
     """
+    if _custom_disabled():
+        return {"source": "custom", "ok": False, "disabled": True}
+
+    # Lazy import
+    missing = []
     try:
-        y, sr = librosa.load(audio_path, sr=16000, mono=True)
-        duration = librosa.get_duration(y=y, sr=sr)
-        rms = np.mean(librosa.feature.rms(y=y))
-        mfcc = np.mean(librosa.feature.mfcc(y=y, sr=sr), axis=1).tolist()
+        import numpy as np
+        import librosa
+    except Exception:
+        return {"source": "custom", "ok": False, "error": "deps_missing: numpy/librosa"}
 
-        features = {
-            "source": "custom",
-            "ok": True,
-            "duration": round(duration, 2),
-            "rms": round(float(rms), 6),
-            "mfcc": mfcc,
-            "extra": {}
-        }
+    try:
+        import crepe  # noqa
+    except Exception:
+        missing.append("crepe")
 
-        # --- CREPE: pitch detection (solo se disponibile) ---
-        if crepe is not None:
-            try:
-                _, frequency, confidence, _ = crepe.predict(y, sr, viterbi=True)
-                mean_pitch = float(np.mean(frequency))
-                mean_conf = float(np.mean(confidence))
-                features["extra"]["crepe_pitch"] = round(mean_pitch, 2)
-                features["extra"]["crepe_confidence"] = round(mean_conf, 3)
-            except Exception as e:
-                features["extra"]["crepe_error"] = str(e)
-        else:
-            features["extra"]["crepe_status"] = "CREPE non installato (lazy import)"
+    try:
+        import tensorflow as tf  # noqa
+    except Exception:
+        missing.append("tensorflow")
 
-        # --- OpenL3: embeddings audio (solo se disponibile) ---
-        if openl3 is not None:
-            try:
-                emb, ts = openl3.get_audio_embedding(y, sr, embedding_size=512, content_type="music")
-                mean_emb = np.mean(emb, axis=0)[:10].tolist()  # compressione leggera
-                features["extra"]["openl3_preview"] = mean_emb
-            except Exception as e:
-                features["extra"]["openl3_error"] = str(e)
-        else:
-            features["extra"]["openl3_status"] = "OpenL3 non installato (lazy import)"
+    try:
+        import openl3
+    except Exception:
+        missing.append("openl3")
 
-        return features
+    if missing:
+        return {"source": "custom", "ok": False, "error": f"deps_missing: {','.join(missing)}"}
 
-    except Exception as e:
-        traceback.print_exc()
-        return {
-            "source": "custom",
-            "ok": False,
-            "error": str(e)
-        }
+    # Se le deps ci sono, procedi
+    import crepe
+    import openl3
+
+    # Carica audio
+    y, sr = librosa.load(audio_path, sr=16000, mono=True)
+    y = librosa.util.normalize(y)
+
+    # Pitch con CREPE (model capacity 'tiny' per velocità)
+    # CREPE vuole sr=16000 float32
+    import numpy as _np
+    audio_f32 = _np.asarray(y, dtype=_np.float32)
+    time_f, frequency, confidence, activation = crepe.predict(
+        audio_f32, sr, step_size=20, model_capacity='tiny', viterbi=True
+    )
+    # pitch median (Hz) considerando confidenza > 0.5
+    valid = frequency[confidence > 0.5]
+    pitch_hz = float(_np.median(valid)) if valid.size else 0.0
+
+    # Beat/tempo + chroma
+    tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+    chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
+    chroma_mean = chroma.mean(axis=1).tolist()
+
+    # Embedding OpenL3 (modello audio, content_type music, 512 dim)
+    emb, ts = openl3.get_audio_embedding(
+        y, sr, input_repr="mel128", content_type="music", embedding_size=512, center=True, hop_size=0.5
+    )
+    # media embedding
+    emb_mean = emb.mean(axis=0).tolist()
+
+    return {
+        "source": "custom",
+        "ok": True,
+        "results": [
+            {
+                "title": "Custom Analysis",
+                "artist": "",
+                "url": "",
+                "preview": "",
+                "image": "",
+                "confidence": 0.4,
+                "features": {
+                    "sr": sr,
+                    "duration_sec": float(len(y)/sr),
+                    "pitch_hz": pitch_hz,
+                    "tempo_bpm": float(tempo),
+                    "chroma_mean": chroma_mean,
+                    "embedding_size": len(emb_mean)
+                }
+            }
+        ]
+    }

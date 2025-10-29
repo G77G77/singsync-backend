@@ -1,24 +1,27 @@
-# === Core API ===
+# SingSync Backend Requirements
+
+# Core backend
 fastapi==0.115.0
 uvicorn==0.30.6
 requests==2.31.0
 python-multipart==0.0.9
 aiofiles==24.1.0
 
-# === Audio / DSP ===
-numpy==1.26.4
-scipy==1.12.0
+# Audio processing essentials
 librosa==0.10.2.post1
 soundfile==0.12.1
-audioread==3.0.1
+numpy==1.26.4
+scipy==1.12.0
 
-# === Machine Learning / Pitch Extraction ===
-tensorflow==2.15.0
-crepe==0.0.12
-openl3==0.4.1
+# Speech & ML models
+openai==1.40.0
+# whisper (usa OpenAI)
+# genius-api integration gestita via requests
 
-# === AI & API Clients ===
-openai==1.51.0
+# Optional heavy ML dependencies (commentate per evitare errori su Render)
+# tensorflow==2.17.0
+# crepe==0.0.12
+# openl3==0.4.2
 
-# === Utility ===
-faiss-cpu==1.7.4
+# Utils
+aiohttp==3.9.5

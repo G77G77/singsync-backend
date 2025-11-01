@@ -1,63 +1,45 @@
-import os
-import requests
-from typing import Dict, Any, List
+import os, time, requests
+from openai import OpenAI
 
-OPENAI_MODEL = os.getenv("WHISPER_MODEL", "whisper-1")  # o "gpt-4o-mini-transcribe"
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-def _wg_disabled() -> bool:
-    return os.getenv("ENABLE_WHISPER_GENIUS", "1") != "1"
-
-def _openai_transcribe_wav(path: str) -> str:
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY missing")
-
-    url = "https://api.openai.com/v1/audio/transcriptions"
-    headers = {"Authorization": f"Bearer {api_key}"}
-    with open(path, "rb") as f:
-        files = {"file": (os.path.basename(path), f, "audio/wav")}
-        data = {"model": OPENAI_MODEL, "language": "auto"}
-        r = requests.post(url, headers=headers, files=files, data=data, timeout=60)
-    jr = r.json()
-    if "error" in jr:
-        raise RuntimeError(jr["error"])
-    return (jr.get("text") or "").strip()
-
-def _genius_search(q: str) -> List[Dict[str, Any]]:
-    token = os.getenv("GENIUS_API_TOKEN", "")
-    if not (token and q):
-        return []
+async def run_whisper_genius(audio_path: str):
+    start = time.time()
     try:
-        h = {"Authorization": f"Bearer {token}"}
-        r = requests.get("https://api.genius.com/search", headers=h, params={"q": q}, timeout=20)
-        data = r.json()
-        out = []
-        for hit in (data.get("response", {}).get("hits") or [])[:5]:
-            s = hit.get("result", {})
-            out.append({
-                "title": s.get("title") or "",
-                "artist": (s.get("primary_artist") or {}).get("name", ""),
-                "url": s.get("url") or "",
-                "preview": "",
-                "image": (s.get("song_art_image_url") or s.get("header_image_url") or ""),
-                "source": "whisper+genius",
-                "confidence": 0.6
-            })
-        return out
-    except Exception:
-        return []
+        lang = os.getenv("WHISPER_LANG", "auto").lower()
+        langs_to_try = ["it", "en"] if lang == "auto" else [lang]
+        transcript_text = None
+        last_error = None
 
-def run_whisper_genius(audio_path: str) -> Dict[str, Any]:
-    if _wg_disabled():
-        return {"source": "whisper_genius", "ok": False, "disabled": True}
-    try:
-        text = _openai_transcribe_wav(audio_path)
-        results = _genius_search(text) if text else []
+        for l in langs_to_try:
+            try:
+                with open(audio_path, "rb") as f:
+                    t = client.audio.transcriptions.create(model="whisper-1", file=f, language=l)
+                transcript_text = t.text.strip()
+                break
+            except Exception as e:
+                last_error = str(e)
+
+        if not transcript_text:
+            raise RuntimeError(last_error or "Whisper transcription failed")
+
+        genius_token = os.getenv("GENIUS_API_TOKEN")
+        if not genius_token:
+            raise RuntimeError("GENIUS_API_TOKEN mancante")
+
+        headers = {"Authorization": f"Bearer {genius_token}"}
+        res = requests.get("https://api.genius.com/search", headers=headers, params={"q": transcript_text[:100]})
+        data = res.json()
+
+        hits = data.get("response", {}).get("hits", [])
+        songs = [{"title": h["result"]["title"], "artist": h["result"]["primary_artist"]["name"], "url": h["result"]["url"]} for h in hits[:5]]
+
         return {
             "source": "whisper_genius",
             "ok": True,
-            "query": text,
-            "results": results
+            "elapsed_sec": round(time.time() - start, 1),
+            "transcript": transcript_text,
+            "results": songs,
         }
     except Exception as e:
-        return {"source": "whisper_genius", "ok": False, "error": str(e)}
+        return {"source": "whisper_genius", "ok": False, "error": str(e), "elapsed_sec": round(time.time() - start, 1)}

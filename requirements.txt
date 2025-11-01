@@ -1,27 +1,20 @@
-# --- CORE BACKEND ---
 fastapi==0.115.0
 uvicorn==0.30.6
 requests==2.31.0
 python-multipart==0.0.9
 aiofiles==24.1.0
-
-# --- AUDIO FEATURES BASE ---
 librosa==0.10.2.post1
 soundfile==0.12.1
 numpy==1.26.4
 scipy==1.12.0
-
-# --- PIPELINE BASE (Whisper + Genius + ACRCloud) ---
 openai==1.50.2
 pydub==0.25.1
-
-# --- UTILS E STRUMENTI ---
 tqdm==4.66.1
 certifi
 idna
 anyio
 starlette==0.37.2
 jinja2
-python-dotenv==1.0.
+python-dotenv==1.0.1
 aiohttp==3.10.5
 httpx>=0.27.0

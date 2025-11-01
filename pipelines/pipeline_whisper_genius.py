@@ -1,5 +1,5 @@
-# pipelines/pipeline_whisper_genius.py
 import os
+import re
 import time
 from typing import List, Dict, Any
 
@@ -11,6 +11,9 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 GENIUS_API_TOKEN = os.getenv("GENIUS_API_TOKEN")  # opzionale ma consigliato
 GENIUS_API_URL = "https://api.genius.com/search"
+
+# ✅ Regex per escludere risultati con caratteri non latini
+LATIN_PATTERN = re.compile(r"^[a-zA-Z0-9\s\-,.!?'\"éèàùìòç&()]+$", re.IGNORECASE)
 
 
 async def _search_genius(query: str, top_k: int = 5) -> List[Dict[str, Any]]:
@@ -43,6 +46,11 @@ async def _search_genius(query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         title = r.get("title") or r.get("full_title") or "Senza titolo"
         artist = (r.get("primary_artist") or {}).get("name") or ""
         url = r.get("url")
+
+        # ⚠️ Filtro per saltare risultati con caratteri non latini
+        if not LATIN_PATTERN.match(title) or not LATIN_PATTERN.match(artist):
+            continue
+
         out.append({"title": title, "artist": artist, "url": url})
     return out
 
@@ -59,7 +67,6 @@ async def run_whisper_genius(file_path: str) -> Dict[str, Any]:
             tx = client.audio.transcriptions.create(
                 model="whisper-1",   # puoi passare "gpt-4o-mini-transcribe" se preferisci
                 file=f,
-                # non mettere language="auto" (causava l'errore in passato)
             )
         transcript = (tx.text or "").strip()
     except Exception as e:

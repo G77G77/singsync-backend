@@ -1,41 +1,20 @@
 import os
-import time
 import hmac
 import base64
 import hashlib
-from typing import Dict
-
+import time
 import requests
-from pydub import AudioSegment
+from pipelines.pipeline_genius_text import run_genius_text
 
-
-def _prep_audio_for_acr(file_path: str) -> bytes:
-    """
-    Converte l'audio in WAV mono 16kHz e lo restituisce in bytes.
-    """
+def run_acrcloud(file_path: str):
+    """Riconosce brano con ACRCloud e arricchisce con link Genius."""
+    start = time.time()
     try:
-        audio = AudioSegment.from_file(file_path)
-        if len(audio) > 15000:
-            audio = audio[:15000]
-        audio = audio.set_channels(1).set_frame_rate(16000)
+        host = os.getenv("ACRCLOUD_HOST")
+        access_key = os.getenv("ACRCLOUD_ACCESS_KEY")
+        access_secret = os.getenv("ACRCLOUD_ACCESS_SECRET")
 
-        # Esporta direttamente in memoria (senza file temporaneo)
-        from io import BytesIO
-        buf = BytesIO()
-        audio.export(buf, format="wav")
-        return buf.getvalue()
-    except Exception as e:
-        raise RuntimeError(f"prep_audio_failed: {e}")
-
-
-def run_acrcloud(file_path: str) -> Dict:
-    t0 = time.time()
-    try:
-        host = os.getenv("ACRCLOUD_HOST", "")
-        key = os.getenv("ACRCLOUD_ACCESS_KEY", "")
-        secret = os.getenv("ACRCLOUD_ACCESS_SECRET", "")
-
-        if not host or not key or not secret:
+        if not host or not access_key or not access_secret:
             return {
                 "source": "acrcloud",
                 "ok": False,
@@ -43,70 +22,56 @@ def run_acrcloud(file_path: str) -> Dict:
                 "elapsed_sec": 0,
             }
 
-        # Garantiamo schema
-        host = host.strip().rstrip("/")
-        if not host.startswith("http"):
-            host = "https://" + host
-
-        endpoint = "/v1/identify"
-        url = f"{host}{endpoint}"
-
-        # Prepara audio
-        audio_data = _prep_audio_for_acr(file_path)
-
         timestamp = str(int(time.time()))
-        string_to_sign = "\n".join(["POST", endpoint, key, "audio", "1", timestamp])
+        string_to_sign = f"POST\n/v1/identify\n{access_key}\naudio\n1\n{timestamp}"
         sign = base64.b64encode(
-            hmac.new(secret.encode(), string_to_sign.encode(), hashlib.sha1).digest()
-        ).decode()
+            hmac.new(
+                access_secret.encode("utf-8"),
+                string_to_sign.encode("utf-8"),
+                digestmod=hashlib.sha1,
+            ).digest()
+        ).decode("utf-8")
+
+        with open(file_path, "rb") as f:
+            sample_bytes = f.read()
 
         data = {
-            "access_key": key,
+            "access_key": access_key,
+            "sample_bytes": len(sample_bytes),
+            "timestamp": timestamp,
+            "signature": sign,
             "data_type": "audio",
             "signature_version": "1",
-            "signature": sign,
-            "timestamp": timestamp,
-            "sample_bytes": len(audio_data),
         }
 
-        files = {"sample": ("sample.wav", audio_data, "audio/wav")}
-        r = requests.post(url, data=data, files=files, timeout=15)
+        files = {"sample": sample_bytes}
+        r = requests.post(f"https://{host}/v1/identify", files=files, data=data, timeout=15)
 
-        # --- risposta ---
-        try:
-            payload = r.json()
-        except Exception:
+        res = r.json()
+        elapsed = round(time.time() - start, 2)
+
+        if "status" not in res or res["status"]["code"] != 0:
             return {
                 "source": "acrcloud",
                 "ok": False,
-                "error": f"HTTP {r.status_code}: {r.text[:200]}",
-                "elapsed_sec": round(time.time() - t0, 2),
+                "error": res.get("status", {}).get("msg", "Nessun brano riconosciuto"),
+                "elapsed_sec": elapsed,
             }
 
-        # --- analisi payload ---
-        if payload.get("status", {}).get("code") == 0:
-            music = payload.get("metadata", {}).get("music", [])
-            if music:
-                top = music[0]
-                title = top.get("title", "Sconosciuto")
-                artists = ", ".join(a.get("name", "") for a in top.get("artists", []))
-                from requests.utils import quote
-                genius_link = f"https://genius.com/search?q={quote((artists + ' ' + title).strip())}"
-                return {
-                    "source": "acrcloud",
-                    "ok": True,
-                    "title": title,
-                    "artist": artists or "Sconosciuto",
-                    "url": genius_link,
-                    "elapsed_sec": round(time.time() - t0, 2),
-                }
+        music_info = res["metadata"]["music"][0]
+        title = music_info.get("title")
+        artist = music_info.get("artists", [{}])[0].get("name")
 
-        # Nessun match
+        # 🔗 Cerca anche su Genius usando la pipeline testuale
+        genius_match = await_genius_result(title, artist)
+
         return {
             "source": "acrcloud",
-            "ok": False,
-            "error": "Nessun brano riconosciuto",
-            "elapsed_sec": round(time.time() - t0, 2),
+            "ok": True,
+            "title": title,
+            "artist": artist,
+            "url": genius_match,
+            "elapsed_sec": elapsed,
         }
 
     except Exception as e:
@@ -114,5 +79,22 @@ def run_acrcloud(file_path: str) -> Dict:
             "source": "acrcloud",
             "ok": False,
             "error": str(e),
-            "elapsed_sec": round(time.time() - t0, 2),
+            "elapsed_sec": round(time.time() - start, 2),
         }
+
+
+def await_genius_result(title: str, artist: str) -> str:
+    """Chiama la ricerca Genius per ottenere il link lyrics."""
+    try:
+        query = f"{artist} {title}"
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(run_genius_text(query))
+        loop.close()
+
+        if result and "results" in result and len(result["results"]) > 0:
+            return result["results"][0].get("url", "")
+        return ""
+    except Exception:
+        return ""

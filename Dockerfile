@@ -19,8 +19,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Installa le dipendenze Python base
-RUN pip install --no-cache-dir -r requirements.txt
+# ⚡ Forza reinstallazione e aggiornamento di TUTTI i pacchetti Python
+RUN pip install --no-cache-dir --upgrade --force-reinstall -r requirements.txt
 
 # Installa (opzionale) pacchetti pesanti solo se specificato
 RUN if [ "$INSTALL_CUSTOM_DEPS" = "1" ]; then \

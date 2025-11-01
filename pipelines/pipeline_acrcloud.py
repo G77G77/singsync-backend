@@ -1,95 +1,123 @@
+# pipelines/pipeline_acrcloud.py
 import os
 import time
-import base64
 import hmac
-import hashlib
 import json
-import aiohttp
-import tempfile
-import subprocess
+import base64
+import hashlib
+from typing import Dict
+
+import requests
+from pydub import AudioSegment
 
 
-async def run_acrcloud(file_path: str) -> dict:
-    """Identifica il brano tramite ACRCloud."""
-    start = time.time()
+def _prep_audio_for_acr(src_path: str) -> str:
+    """
+    Converte l'audio in WAV, mono, 16kHz e tronca ai primi ~15s.
+    ACRCloud riconosce molto meglio così.
+    Ritorna il path del file temporaneo pronto per l'upload.
+    """
+    audio = AudioSegment.from_file(src_path)
+    if len(audio) > 15000:
+        audio = audio[:15000]
+    audio = audio.set_channels(1).set_frame_rate(16000)
 
-    host = os.getenv("ACRCLOUD_HOST")
-    access_key = os.getenv("ACRCLOUD_ACCESS_KEY")
-    access_secret = os.getenv("ACRCLOUD_ACCESS_SECRET")
+    tmp_path = f"/tmp/acr_{int(time.time()*1000)}.wav"
+    audio.export(tmp_path, format="wav")
+    return tmp_path
+
+
+def run_acrcloud(file_path: str) -> Dict:
+    t0 = time.time()
+
+    host = os.getenv("ACRCLOUD_HOST", "")
+    access_key = os.getenv("ACRCLOUD_ACCESS_KEY", "")
+    access_secret = os.getenv("ACRCLOUD_ACCESS_SECRET", "")
 
     if not host or not access_key or not access_secret:
         return {
             "source": "acrcloud",
             "ok": False,
             "error": "missing_credentials",
-            "elapsed_sec": 0
+            "elapsed_sec": 0,
         }
 
-    try:
-        # ✅ Forza conversione in WAV 16k mono per compatibilità ACRCloud
-        wav_path = tempfile.mktemp(suffix=".wav")
-        subprocess.run([
-            "ffmpeg", "-y", "-i", file_path,
-            "-ar", "16000", "-ac", "1", wav_path
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # host deve avere lo schema
+    host = host.strip().rstrip("/")
+    if not host.startswith("http"):
+        host = "https://" + host
+    endpoint = "/v1/identify"
+    url = f"{host}{endpoint}"
 
-        # Leggi il file convertito
-        with open(wav_path, "rb") as f:
-            sample_bytes = f.read()
+    # Prepara audio in formato "amico" di ACR
+    tmp_path = _prep_audio_for_acr(file_path)
+
+    try:
+        with open(tmp_path, "rb") as f:
+            sample = f.read()
 
         timestamp = str(int(time.time()))
-        string_to_sign = "\n".join([
-            "POST",
-            "/v1/identify",
-            access_key,
-            "audio",
-            "1",
-            timestamp
-        ])
-        sign = base64.b64encode(
+        string_to_sign = "\n".join(
+            ["POST", endpoint, access_key, "audio", "1", timestamp]
+        )
+        signature = base64.b64encode(
             hmac.new(
-                access_secret.encode("ascii"),
-                string_to_sign.encode("ascii"),
-                digestmod=hashlib.sha1
+                access_secret.encode("utf-8"),
+                string_to_sign.encode("utf-8"),
+                digestmod=hashlib.sha1,
             ).digest()
-        ).decode("ascii")
+        ).decode("utf-8")
 
-        data = aiohttp.FormData()
-        data.add_field("sample", sample_bytes, filename="sample.wav")
-        data.add_field("access_key", access_key)
-        data.add_field("data_type", "audio")
-        data.add_field("signature_version", "1")
-        data.add_field("signature", sign)
-        data.add_field("timestamp", timestamp)
+        data = {
+            "access_key": access_key,
+            "data_type": "audio",
+            "signature_version": "1",
+            "signature": signature,
+            "timestamp": timestamp,
+            "sample_bytes": len(sample),
+        }
+        files = {"sample": ("audio.wav", sample, "audio/wav")}
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(f"https://{host}/v1/identify", data=data) as resp:
-                text = await resp.text()
-                try:
-                    result = json.loads(text)
-                except Exception:
-                    result = {"error": text}
-
-        os.remove(wav_path)
-
-        if "metadata" not in result or "music" not in result["metadata"]:
+        r = requests.post(url, data=data, files=files, timeout=15)
+        # In caso di risposte non-JSON, falliamo con messaggio chiaro
+        try:
+            payload = r.json()
+        except Exception:
             return {
                 "source": "acrcloud",
                 "ok": False,
-                "error": "Nessun brano riconosciuto",
-                "elapsed_sec": round(time.time() - start, 2)
+                "error": f"HTTP {r.status_code}: {r.text[:200]}",
+                "elapsed_sec": round(time.time() - t0, 2),
             }
 
-        music = result["metadata"]["music"][0]
-        title = music.get("title", "Sconosciuto")
-        artist = ", ".join(a["name"] for a in music.get("artists", [])) if music.get("artists") else "Sconosciuto"
+        # Status OK
+        if payload.get("status", {}).get("code") == 0:
+            music = payload.get("metadata", {}).get("music", []) or []
+            if music:
+                top = music[0]
+                title = top.get("title") or ""
+                artists = ", ".join(
+                    a.get("name", "") for a in (top.get("artists") or []) if a.get("name")
+                )
+                # link utile (ricerca lyrics su Genius)
+                from requests.utils import quote
+                genius_search = f"https://genius.com/search?q={quote((artists + ' ' + title).strip())}"
 
+                return {
+                    "source": "acrcloud",
+                    "ok": True,
+                    "title": title or "Sconosciuto",
+                    "artist": artists or "Sconosciuto",
+                    "url": genius_search,
+                    "elapsed_sec": round(time.time() - t0, 2),
+                }
+
+        # Nessun match
         return {
             "source": "acrcloud",
-            "ok": True,
-            "title": title,
-            "artist": artist,
-            "elapsed_sec": round(time.time() - start, 2)
+            "ok": False,
+            "error": "Nessun brano riconosciuto",
+            "elapsed_sec": round(time.time() - t0, 2),
         }
 
     except Exception as e:
@@ -97,5 +125,10 @@ async def run_acrcloud(file_path: str) -> dict:
             "source": "acrcloud",
             "ok": False,
             "error": str(e),
-            "elapsed_sec": round(time.time() - start, 2)
+            "elapsed_sec": round(time.time() - t0, 2),
         }
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass

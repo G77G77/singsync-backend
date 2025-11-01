@@ -14,7 +14,7 @@ from pipelines.pipeline_acrcloud import run_acrcloud
 from pipelines.pipeline_whisper_genius import run_whisper_genius
 from pipelines.pipeline_custom import run_custom
 
-# ✅ FIX: definizione del router prima degli endpoint
+# ✅ Router definito prima di tutto
 router = APIRouter()
 
 # archivio in memoria: token -> path file
@@ -47,7 +47,7 @@ async def identify_stream(token: str = Query(...)):
             tasks.append(asyncio.create_task(run_acrcloud(token, audio_path)))
 
         if os.getenv("ENABLE_WHISPER_GENIUS", "1") == "1":
-            tasks.append(asyncio.create_task(run_whisper_genius(token, audio_path)))
+            tasks.append(asyncio.create_task(run_whisper_genius(audio_path)))
 
         if os.getenv("ENABLE_CUSTOM", "0") == "1":
             tasks.append(asyncio.create_task(run_custom(token, audio_path)))
@@ -67,6 +67,7 @@ async def identify_stream(token: str = Query(...)):
 
                     yield sse_pack(event=payload.get("source", "unknown"), data=payload)
 
+                # Timeout hard
                 if asyncio.get_event_loop().time() - start > TIMEOUT:
                     for t in tasks:
                         t.cancel()
@@ -75,6 +76,7 @@ async def identify_stream(token: str = Query(...)):
                     )
                     break
 
+            # Evento finale
             yield sse_pack(event="done", data={"ok": True})
         except asyncio.CancelledError:
             pass
@@ -95,12 +97,15 @@ async def identify_all(token: str):
     path = UPLOADS[token]
     tasks = []
 
+    # ✅ ACRCloud
     if os.getenv("ENABLE_ACRCLOUD", "1") == "1":
         tasks.append(run_acrcloud(token, path))
 
+    # ✅ Whisper + Genius → solo file_path
     if os.getenv("ENABLE_WHISPER_GENIUS", "1") == "1":
-        tasks.append(run_whisper_genius(token, path))
+        tasks.append(run_whisper_genius(path))
 
+    # ✅ Custom
     if os.getenv("ENABLE_CUSTOM", "0") == "1":
         tasks.append(run_custom(token, path))
 

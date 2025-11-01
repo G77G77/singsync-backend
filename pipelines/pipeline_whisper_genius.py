@@ -1,45 +1,58 @@
-import os, time, requests
+import os
+import time
+from typing import Dict, Any
+
 from openai import OpenAI
+from pipelines.pipeline_genius_text import genius_search_list
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-async def run_whisper_genius(audio_path: str):
-    start = time.time()
+async def run_whisper_genius(audio_path: str, top_k: int = 5) -> Dict[str, Any]:
+    t0 = time.time()
     try:
-        lang = os.getenv("WHISPER_LANG", "auto").lower()
-        langs_to_try = ["it", "en"] if lang == "auto" else [lang]
-        transcript_text = None
-        last_error = None
+        # 1) Trascrizione (no translate)
+        with open(audio_path, "rb") as f:
+            tr = client.audio.transcriptions.create(
+                model="gpt-4o-transcribe",
+                file=f,
+                # niente language forzata → auto detect
+                # temperature bassa per stabilità
+                temperature=0.2,
+            )
+        transcript = (getattr(tr, "text", None) or "").strip()
 
-        for l in langs_to_try:
-            try:
-                with open(audio_path, "rb") as f:
-                    t = client.audio.transcriptions.create(model="whisper-1", file=f, language=l)
-                transcript_text = t.text.strip()
-                break
-            except Exception as e:
-                last_error = str(e)
+        # Se nulla di utile, esci “ok=False”
+        if not transcript:
+            return {
+                "source": "whisper_genius",
+                "ok": False,
+                "error": "transcript_empty",
+                "elapsed_sec": round(time.time() - t0, 2),
+            }
 
-        if not transcript_text:
-            raise RuntimeError(last_error or "Whisper transcription failed")
-
-        genius_token = os.getenv("GENIUS_API_TOKEN")
-        if not genius_token:
-            raise RuntimeError("GENIUS_API_TOKEN mancante")
-
-        headers = {"Authorization": f"Bearer {genius_token}"}
-        res = requests.get("https://api.genius.com/search", headers=headers, params={"q": transcript_text[:100]})
-        data = res.json()
-
-        hits = data.get("response", {}).get("hits", [])
-        songs = [{"title": h["result"]["title"], "artist": h["result"]["primary_artist"]["name"], "url": h["result"]["url"]} for h in hits[:5]]
+        # 2) Cerca su Genius usando il testo trascritto
+        try:
+            results = genius_search_list(transcript, top_k=top_k)
+        except Exception as ge:
+            return {
+                "source": "whisper_genius",
+                "ok": False,
+                "error": f"genius_error: {ge}",
+                "transcript": transcript,
+                "elapsed_sec": round(time.time() - t0, 2),
+            }
 
         return {
             "source": "whisper_genius",
             "ok": True,
-            "elapsed_sec": round(time.time() - start, 1),
-            "transcript": transcript_text,
-            "results": songs,
+            "transcript": transcript,     # mostriamo cosa ha capito
+            "results": results,           # 👉 lista di canzoni url-apribili
+            "elapsed_sec": round(time.time() - t0, 2),
         }
     except Exception as e:
-        return {"source": "whisper_genius", "ok": False, "error": str(e), "elapsed_sec": round(time.time() - start, 1)}
+        return {
+            "source": "whisper_genius",
+            "ok": False,
+            "error": str(e),
+            "elapsed_sec": round(time.time() - t0, 2),
+        }

@@ -1,46 +1,65 @@
-import os, time, hmac, base64, hashlib, requests
+import os
+import time
+from typing import Dict, Any, Optional
 
-ACR_HOST = os.getenv("ACRCLOUD_HOST")
-ACR_ACCESS_KEY = os.getenv("ACRCLOUD_ACCESS_KEY")
-ACR_ACCESS_SECRET = os.getenv("ACRCLOUD_ACCESS_SECRET")
+import requests
+from pipelines.pipeline_genius_text import genius_link_for
 
-async def run_acrcloud(audio_path: str):
-    start = time.time()
+ACR_HOST = os.getenv("ACRCLOUD_HOST") or os.getenv("ACR_HOST")
+ACR_KEY  = os.getenv("ACRCLOUD_KEY") or os.getenv("ACR_KEY")
+ACR_SEC  = os.getenv("ACRCLOUD_SECRET") or os.getenv("ACR_SECRET")
+
+async def run_acrcloud(audio_path: str) -> Dict[str, Any]:
+    t0 = time.time()
     try:
-        if not ACR_ACCESS_KEY or not ACR_ACCESS_SECRET or not ACR_HOST:
-            return {"source": "acrcloud", "ok": False, "error": "missing_credentials", "elapsed_sec": 0}
+        if not (ACR_HOST and ACR_KEY and ACR_SEC):
+            return {
+                "source": "acrcloud",
+                "ok": False,
+                "error": "missing_credentials",
+                "elapsed_sec": 0,
+            }
 
-        http_method = "POST"
-        http_uri = "/v1/identify"
-        timestamp = str(int(time.time()))
-        signature_raw = f"{http_method}\n{http_uri}\n{ACR_ACCESS_KEY}\naudio\n1\n{timestamp}".encode("utf-8")
+        # ... (qui usa il tuo codice già esistente per inviare a ACR e leggere la risposta) ...
+        # Supponiamo di aver ottenuto:
+        #   title, artist, preview_url = ...
+        # Se il match fallisce:
+        # return {"source":"acrcloud","ok":False,"error":"no_match", "elapsed_sec": round(time.time()-t0,2)}
 
-        sign = base64.b64encode(hmac.new(ACR_ACCESS_SECRET.encode("utf-8"), signature_raw, digestmod=hashlib.sha1).digest()).decode("utf-8")
+        # ESEMPIO (placeholder): rimpiazza con il tuo parsing reale
+        title: Optional[str] = None
+        artist: Optional[str] = None
+        preview_url: Optional[str] = None
+        # TODO: assegna title/artist/preview_url dai dati ACR
 
-        files = [
-            ("sample", open(audio_path, "rb")),
-            ("access_key", (None, ACR_ACCESS_KEY)),
-            ("sample_bytes", (None, str(os.path.getsize(audio_path)))),
-            ("timestamp", (None, timestamp)),
-            ("signature", (None, sign)),
-            ("data_type", (None, "audio")),
-            ("signature_version", (None, "1")),
-        ]
+        if not title and not artist:
+            return {
+                "source": "acrcloud",
+                "ok": False,
+                "error": "Nessun brano riconosciuto",
+                "elapsed_sec": round(time.time() - t0, 2),
+            }
 
-        url = f"https://{ACR_HOST}/v1/identify"
-        res = requests.post(url, files=files, timeout=15)
-        data = res.json()
-        music = data.get("metadata", {}).get("music", [])
-        if not music:
-            raise ValueError("Nessun brano riconosciuto")
+        # 👉 Arricchiamo con il link ai lyrics su Genius
+        url = None
+        try:
+            url = genius_link_for(title or "", artist)
+        except Exception:
+            pass
 
-        best = music[0]
         return {
             "source": "acrcloud",
             "ok": True,
-            "title": best.get("title"),
-            "artist": best.get("artists", [{}])[0].get("name"),
-            "elapsed_sec": round(time.time() - start, 1),
+            "title": title,
+            "artist": artist,
+            "preview_url": preview_url,
+            "url": url,   # <— link apribile ai lyrics se disponibile
+            "elapsed_sec": round(time.time() - t0, 2),
         }
     except Exception as e:
-        return {"source": "acrcloud", "ok": False, "error": str(e), "elapsed_sec": round(time.time() - start, 1)}
+        return {
+            "source": "acrcloud",
+            "ok": False,
+            "error": str(e),
+            "elapsed_sec": round(time.time() - t0, 2),
+        }
